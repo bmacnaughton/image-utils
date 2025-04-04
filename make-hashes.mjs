@@ -3,6 +3,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import ExifReader from 'exifreader';
 
+import make, {dirTreeReader} from './async-dir-tree-reader.mjs';
+
 const record = {
   randomFiles: [],
   hashCollisions: 0,
@@ -21,12 +23,14 @@ const filesByDir = {};
 
 for (const dir of dirsToRead) {
   const fullpath = path.resolve(dir);
-  filesByDir[fullpath] = (await fsp.readdir(fullpath, {recursive: true}))
+
+  filesByDir[fullpath] = (await dirTreeReader(dir))
     .map(relativePath => path.join(dir, relativePath));
 }
 
 const kMaxFiles = 1000;
 let fileCount = 0;
+
 
 for (const fullpath in filesByDir) {
   for (let i = 0; i < filesByDir[fullpath].length; i++) {
@@ -86,7 +90,7 @@ for (const hash in hashes) {
 
 for (const hash in hashes2) {
   if (hashes2[hash].length > 1) {
-    console.log(`hashes[${hash}] count = ${hashes[hash].length}`);
+    console.log(`hashes2[${hash}] count = ${hashes2[hash].length}`);
   }
 }
 

@@ -15,16 +15,23 @@ export default async function* makeDirTreeReader(dir, options = {}) {
 
   for await (const dirent of dirents) {
     const fullpath = path.join(dirent.parentPath, dirent.name);
+    // if it is a directory recurse
     if (dirent.isDirectory()) {
       if (returnDirs) {
          yield dirent;
       }
-      const reader = makeDirTreeReader(fullpath);
+      const reader = makeDirTreeReader(fullpath, options);
       yield* await reader;
     } else if (returnAll || dirent.isFile()) {
-      // consider making the previous line test user-defined
+      // consider making the previous line test user-defined. could reference
+      // bitmask in dirent object.
       yield fullpath;
     }
   }
 }
 
+export async function dirTreeReader(dir) {
+  const fullpath = path.resolve(dir);
+  return (await fsp.readdir(fullpath, {recursive: true}))
+    .map(relativePath => path.join(dir, relativePath));
+}
