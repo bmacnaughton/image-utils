@@ -1,7 +1,11 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
+
 import ExifReader from 'exifreader';
+
+import HashTable from './hash-table.mjs';
 
 import make, {dirTreeReader} from './async-dir-tree-reader.mjs';
 import findImageData from './find-image-data.mjs';
@@ -15,6 +19,13 @@ const collisions = {
   imageLength: new Map(),
   imageXor: new Map(),
 };
+
+const hashTables = {
+  dateTime: new HashTable(),
+  imageBytes: new HashTable(),
+  imageLength: new HashTable(),
+  imageXor: new HashTable(),
+}
 
 // maybe use '/mnt/z/xiaoxin-bruce/pictures'?
 let dirsToRead = ['.'];
@@ -54,6 +65,7 @@ for (const fullpath in filesByDir) {
 
     // store each hashes result
     for (const hash in hashes) {
+      hashTables[hash].addHash(hashes[hash], details.file);
       if (!collisions[hash].has(hashes[hash])) {
         collisions[hash].set(hashes[hash], []);
       }
@@ -70,14 +82,28 @@ for (const fullpath in filesByDir) {
   record.randomFiles && console.log(`found ${record.randomFiles.length} random files`);
 }
 
+const collisionCounts = {};
+for (const hash in collisions) {
+  collisionCounts[hash] = 0;
+}
+
 for (const hash in collisions) {
   for (const hkey of collisions[hash].entries()) {
     if (hkey[1].length > 1) {
+      collisionCounts[hash] += hkey[1].length;
       const files = hkey[1].join(', ');
-      console.log(`${hash} hash[${hkey[0]}] count = ${hkey[1].length}: ${files}`);
+      // next line is too noisy.
+      //console.log(`${hash} hash[${hkey[0]}] count = ${hkey[1].length}: ${files}`);
     }
   }
+  console.log(`${hash} summary:`, hashTables[hash].summarize());
+  if (hash === 'imageXor') {
+    const hashesWithCollisions = hashTables[hash].getHashesWithCollisions();
+    console.log('imageXor hash table:', hashesWithCollisions);
+  }
 }
+
+console.log('collisionCounts', collisionCounts);
 
 
 // let's get the dirs that have the defaults (because the fields we
@@ -146,11 +172,20 @@ async function getHashes(file) {
   //   hashes.imageBytes = undefined;
   // }
 
+  // move logic to store image-length table here. only if image-length is dup
+  // do we execute she256 hash. so two-pass? not simple unless we keep data
+  // around too. maybe store {file, startImage, endImage} in table so it can
+  // easily be reread and a sha256 calculated when there are collisions?
+
   const image = findImageData(buf);
   if (image) {
     hashes.imageLength = image.length;
     hashes.imageBytes = image[0] << 24 | image[1] << 16 | image.at(-2) << 8 << image.at(-1) << 0;
-    hashes.imageXor = hashes.imageLength ^ hashes.imageBytes;
+
+    //hashes.imageXor = hashes.imageLength ^ hashes.imageBytes;
+    const hash = createHash('sha256');
+    hash.update(image);
+    hashes.imageXor = hash.digest('hex');
   } else {
     hashes.imageLength = undefined;
     hashes.imageBytes = -1;
