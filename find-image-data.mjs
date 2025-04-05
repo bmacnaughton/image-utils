@@ -52,5 +52,5 @@ export function findImageData2(buf) {
     i += 1;
   }
 
-  return 'end';
+  return undefined;
 }

@@ -4,14 +4,17 @@ import path from 'node:path';
 import ExifReader from 'exifreader';
 
 import make, {dirTreeReader} from './async-dir-tree-reader.mjs';
+import findImageData from './find-image-data.mjs';
 
 const record = {
   randomFiles: [],
-  hashCollisions: 0,
-  hashCollisions2: 0,
 };
-const hashes = new Map();
-const hashes2 = new Map();
+const collisions = {
+  dateTime: new Map(),
+  imageBytes: new Map(),
+  imageLength: new Map(),
+  imageXor: new Map(),
+};
 
 // maybe use '/mnt/z/xiaoxin-bruce/pictures'?
 let dirsToRead = ['.'];
@@ -47,28 +50,14 @@ for (const fullpath in filesByDir) {
 
     fileCount += 1;
 
-    let newHash = false;
-    let newHash2 = false;
+    const {hashes, details} = await getHashes(file);
 
-    const {hash, details} = await getHash(file);
-    if (!hashes[hash]) {
-      hashes[hash] = [details];
-      newHash = true;
-    } else {
-      record.hashCollisions += 1;
-      hashes[hash].push(details);
-    }
-
-    const image = details.Thumbnail?.image;
-
-    if (image?.byteLength) {
-      if (!hashes2[image.byteLength]) {
-        hashes2[image.byteLength] = [details];
-        newHash2 = true;
-      } else {
-        record.hashCollisions2 += 1;
-        hashes2[image.byteLength].push(details);
+    // store each hashes result
+    for (const hash in hashes) {
+      if (!collisions[hash].has(hashes[hash])) {
+        collisions[hash].set(hashes[hash], []);
       }
+      collisions[hash].get(hashes[hash]).push(details.file);
     }
 
     // prevent it from taking forever until it's working as i want
@@ -81,23 +70,20 @@ for (const fullpath in filesByDir) {
   record.randomFiles && console.log(`found ${record.randomFiles.length} random files`);
 }
 
-for (const hash in hashes) {
-  if (hashes[hash].length > 1) {
-    console.log(`hashes[${hash}] count = ${hashes[hash].length}`);
+for (const hash in collisions) {
+  for (const hkey of collisions[hash].entries()) {
+    if (hkey[1].length > 1) {
+      const files = hkey[1].join(', ');
+      console.log(`${hash} hash[${hkey[0]}] count = ${hkey[1].length}: ${files}`);
+    }
   }
 }
 
-
-for (const hash in hashes2) {
-  if (hashes2[hash].length > 1) {
-    console.log(`hashes2[${hash}] count = ${hashes2[hash].length}`);
-  }
-}
 
 // let's get the dirs that have the defaults (because the fields we
 // really want to use to hash are not present).
 
-if (hashes.default) {
+if (collisions.default) {
   const defaultDirs = new Set();
   for (const details of hashes.default) {
     const dir = details.file.split('/')[0];
@@ -133,8 +119,9 @@ defaultDirs Set(12) {
 //
 // helpers
 //
-async function getHash(file) {
-  const tags = await ExifReader.load(file);
+async function getHashes(file) {
+  const buf = await fsp.readFile(file);
+  const tags = await ExifReader.load(buf);
 
   if (tags.CreatorTool?.description.startsWith('Adobe')) {
     //
@@ -146,8 +133,32 @@ async function getHash(file) {
     hash = tags.DateTime?.description || 'default';
   }
   const details = hash === 'default' ? tags : extractDetails(tags);
+
+  const hashes = {
+    dateTime: hash,
+  }
+
+  // const thumb = details.Thumbnail?.image;
+
+  // if (thumb?.byteLength) {
+  //   hashes.imageBytes = thumb.byteLength;
+  // } else {
+  //   hashes.imageBytes = undefined;
+  // }
+
+  const image = findImageData(buf);
+  if (image) {
+    hashes.imageLength = image.length;
+    hashes.imageBytes = image[0] << 24 | image[1] << 16 | image.at(-2) << 8 << image.at(-1) << 0;
+    hashes.imageXor = hashes.imageLength ^ hashes.imageBytes;
+  } else {
+    hashes.imageLength = undefined;
+    hashes.imageBytes = -1;
+    hashes.imageXor = -1;
+  }
+
   return {
-    hash,
+    hashes,
     details: {file,  ...details},
   };
 }
