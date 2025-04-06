@@ -1,14 +1,11 @@
 
-import fsp from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 
-import ExifReader from 'exifreader';
+import HashTable from './lib/hash-table.mjs';
 
-import HashTable from './hash-table.mjs';
-
-import make, {dirTreeReader} from './async-dir-tree-reader.mjs';
-import findImageData from './find-image-data.mjs';
+import make, {dirTreeReader} from './lib/async-dir-tree-reader.mjs';
+import Image from './lib/image.mjs';
 
 const record = {
   randomFiles: [],
@@ -17,14 +14,14 @@ const collisions = {
   dateTime: new Map(),
   imageBytes: new Map(),
   imageLength: new Map(),
-  imageXor: new Map(),
+  //imageXor: new Map(),
 };
 
 const hashTables = {
   dateTime: new HashTable(),
   imageBytes: new HashTable(),
   imageLength: new HashTable(),
-  imageXor: new HashTable(),
+  //imageXor: new HashTable(),
 }
 
 // maybe use '/mnt/z/xiaoxin-bruce/pictures'?
@@ -105,6 +102,14 @@ for (const hash in collisions) {
 
 console.log('collisionCounts', collisionCounts);
 
+// now let's look at collisions in the length hash. for those,
+// we'll generate an SHA256 hash.
+for (const [length, metadata] of collisions.imageLength.entries()) {
+  if (metadata.length > 1) {
+    console.log(`length ${length} has ${metadata.length} files`);
+  }
+}
+
 
 // let's get the dirs that have the defaults (because the fields we
 // really want to use to hash are not present).
@@ -146,8 +151,10 @@ defaultDirs Set(12) {
 // helpers
 //
 async function getHashes(file) {
-  const buf = await fsp.readFile(file);
-  const tags = await ExifReader.load(buf);
+  const iObj = new Image(file);
+
+  const tags = await iObj.getExifData();
+
 
   if (tags.CreatorTool?.description.startsWith('Adobe')) {
     //
@@ -177,19 +184,16 @@ async function getHashes(file) {
   // around too. maybe store {file, startImage, endImage} in table so it can
   // easily be reread and a sha256 calculated when there are collisions?
 
-  const image = findImageData(buf);
+  const image = await iObj.getImageBuffer();
+
   if (image) {
     hashes.imageLength = image.length;
+    // pretty worthless hash.
     hashes.imageBytes = image[0] << 24 | image[1] << 16 | image.at(-2) << 8 << image.at(-1) << 0;
 
-    //hashes.imageXor = hashes.imageLength ^ hashes.imageBytes;
-    const hash = createHash('sha256');
-    hash.update(image);
-    hashes.imageXor = hash.digest('hex');
   } else {
     hashes.imageLength = undefined;
     hashes.imageBytes = -1;
-    hashes.imageXor = -1;
   }
 
   return {
