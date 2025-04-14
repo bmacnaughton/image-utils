@@ -1,4 +1,6 @@
+#!/usr/bin/env node
 
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 
@@ -7,6 +9,9 @@ import HashTable from './lib/hash-table.mjs';
 import make, {dirTreeReader} from './lib/async-dir-tree-reader.mjs';
 import Image from './lib/image.mjs';
 
+
+const kMaxFiles = process.env.MAX_FILES || 1000;
+
 const record = {
   randomFiles: [],
 };
@@ -14,18 +19,16 @@ const collisions = {
   dateTime: new Map(),
   imageBytes: new Map(),
   imageLength: new Map(),
-  //imageXor: new Map(),
 };
 
 const hashTables = {
   dateTime: new HashTable(),
   imageBytes: new HashTable(),
   imageLength: new HashTable(),
-  //imageXor: new HashTable(),
 }
 
 // maybe use '/mnt/z/xiaoxin-bruce/pictures'?
-let dirsToRead = ['.'];
+let dirsToRead = [process.env.PICTURES || '.'];
 if (process.argv.length > 2) {
   dirsToRead = process.argv.slice(2);
 }
@@ -35,11 +38,12 @@ const filesByDir = {};
 for (const dir of dirsToRead) {
   const fullpath = path.resolve(dir);
 
-  filesByDir[fullpath] = (await dirTreeReader(dir))
-    .map(relativePath => path.join(dir, relativePath));
+  filesByDir[fullpath] = await dirTreeReader(dir);
+  if (!path.isAbsolute(fullpath)) {
+    filesByDir[fullpath] = filesByDir[fullpath].map(relativePath => path.join(fullpath, relativePath));
+  }
 }
 
-const kMaxFiles = 1000;
 let fileCount = 0;
 
 
@@ -69,6 +73,9 @@ for (const fullpath in filesByDir) {
       collisions[hash].get(hashes[hash]).push(details.file);
     }
 
+    if (fileCount % 1000 === 0) {
+      console.log(`processed ${fileCount} files`);
+    }
     // prevent it from taking forever until it's working as i want
     if (fileCount > kMaxFiles) {
       break;
@@ -94,29 +101,46 @@ for (const hash in collisions) {
     }
   }
   console.log(`${hash} summary:`, hashTables[hash].summarize());
-  if (hash === 'imageXor') {
-    const hashesWithCollisions = hashTables[hash].getHashesWithCollisions();
-    console.log('imageXor hash table:', hashesWithCollisions);
-  }
 }
 
 console.log('collisionCounts', collisionCounts);
 
 // now let's look at collisions in the length hash. for those,
-// we'll generate an SHA256 hash.
-for (const [length, metadata] of collisions.imageLength.entries()) {
-  if (metadata.length > 1) {
-    console.log(`length ${length} has ${metadata.length} files`);
+// we'll generate an SHA256 hash. while there are collisions with
+// the length, it's a good, simple check. should i compare the time
+// it takes to do this two pass approach vs. just calculating she256
+// on the first pass?
+const filesToHash = [];
+for (const [length, filename] of collisions.imageLength.entries()) {
+  if (filename.length > 1) {
+    //console.log(`length ${length} has ${filename.length} files`);
+    filesToHash.push(filename);
+  }
+}
+const shaHashes = new Map();
+for (const filenames of filesToHash) {
+  for (const file of filenames) {
+    const image = new Image(file);
+    const buf = await image.getImageBuffer();
+    const hash = createHash('sha256').update(buf).digest('hex');
+    let images;
+    images = shaHashes.get(hash);
+    if (!images) {
+      images = [];
+      shaHashes.set(hash, images);
+    }
+    images.push({file, tags: image.getExifData()});
   }
 }
 
+await writeShaCollisions(shaHashes);
 
 // let's get the dirs that have the defaults (because the fields we
 // really want to use to hash are not present).
 
 if (collisions.default) {
   const defaultDirs = new Set();
-  for (const details of hashes.default) {
+  for (const details of shaHashes.default) {
     const dir = details.file.split('/')[0];
     if (dir === 'bbq') {
       console.log(details)
@@ -155,7 +179,6 @@ async function getHashes(file) {
 
   const tags = await iObj.getExifData();
 
-
   if (tags.CreatorTool?.description.startsWith('Adobe')) {
     //
   }
@@ -170,19 +193,6 @@ async function getHashes(file) {
   const hashes = {
     dateTime: hash,
   }
-
-  // const thumb = details.Thumbnail?.image;
-
-  // if (thumb?.byteLength) {
-  //   hashes.imageBytes = thumb.byteLength;
-  // } else {
-  //   hashes.imageBytes = undefined;
-  // }
-
-  // move logic to store image-length table here. only if image-length is dup
-  // do we execute she256 hash. so two-pass? not simple unless we keep data
-  // around too. maybe store {file, startImage, endImage} in table so it can
-  // easily be reread and a sha256 calculated when there are collisions?
 
   const image = await iObj.getImageBuffer();
 
@@ -217,6 +227,33 @@ function extractDetails(tags) {
     ExifVersion: tags.ExifVersion,
     Thumbnail: tags.Thumbnail,
   };
+}
+
+async function writeShaCollisions(shaHashes) {
+  const ofile = await fsp.open('sha256-collisions.txt', 'w');
+  for (const shaHash of shaHashes.entries()) {
+    if (shaHash[1].length > 1) {
+      const hashText = shaHash[0].slice(0, 8);
+      const files = shaHash[1].map(metadata => quoteIfNeeded(metadata.file)).join(',');
+      const line = `${hashText} ${shaHash[1].length} ${files}\n`;
+      await ofile.write(line);
+      console.log(`sha256 hash ${hashText} has ${shaHash[1].length} files: ${files}`);
+    }
+  }
+  await ofile.close();
+}
+
+function quoteIfNeeded(name) {
+  if (name.includes(' ')) {
+    if (!name.includes('"')) {
+      return `"${name}"`;
+    } else if (!name.includes("'")) {
+      return `'${name}'`;
+    } else {
+      return name.replaceAll(' ', '\\ ');
+    }
+  }
+  return name;
 }
 
 // now filesByDir should have only jpg files.
