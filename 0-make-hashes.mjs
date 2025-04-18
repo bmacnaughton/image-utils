@@ -33,6 +33,9 @@ if (process.argv.length > 2) {
   dirsToRead = process.argv.slice(2);
 }
 
+//
+// recursively read the directories and find all the jpg files
+//
 const filesByDir = {};
 
 for (const dir of dirsToRead) {
@@ -52,7 +55,7 @@ for (const fullpath in filesByDir) {
     const file = filesByDir[fullpath][i];
     // skip and don't count files that aren't jpeg
     if (!file.match(/(.jpg|.jpeg)$/i)) {
-      // move the name to the randomFiles array.
+      // move the name to the randomFiles array to keep track of non-jpg files
       const items = filesByDir[fullpath].splice(i, 1);
       record.randomFiles.push(...items);
       // have to look at this index again after removing this item
@@ -60,6 +63,7 @@ for (const fullpath in filesByDir) {
       continue;
     }
 
+    // only count jpgs
     fileCount += 1;
 
     const {hashes, details} = await getHashes(file);
@@ -109,7 +113,9 @@ console.log('collisionCounts', collisionCounts);
 // we'll generate an SHA256 hash. while there are collisions with
 // the length, it's a good, simple check. should i compare the time
 // it takes to do this two pass approach vs. just calculating she256
-// on the first pass?
+// on the first pass? the tradeoff is reading the file twice for those with
+// the same length vs. performing a SHA256 hash on every single file. might
+// be worth checking - hard to be sure any collection is representative.
 const filesToHash = [];
 for (const [length, filename] of collisions.imageLength.entries()) {
   if (filename.length > 1) {
@@ -183,7 +189,10 @@ async function getHashes(file) {
     //
   }
 
-  // let's start with just DateTimeOriginal and see how it works
+  // let's start with just DateTimeOriginal and see how it works.
+  // => it doesn't work very well at all.
+  // - missing data is big issue
+  // - renames/resets when adobe modifies
   let hash = tags.DateTimeOriginal?.description || tags.CreateDate?.description;
   if (!hash) {
     hash = tags.DateTime?.description || 'default';
@@ -198,7 +207,8 @@ async function getHashes(file) {
 
   if (image) {
     hashes.imageLength = image.length;
-    // pretty worthless hash.
+    // pretty worthless hash. this was my second attempt, trying not to need
+    // to execute a robust hash function, but it sucked badly.
     hashes.imageBytes = image[0] << 24 | image[1] << 16 | image.at(-2) << 8 << image.at(-1) << 0;
 
   } else {

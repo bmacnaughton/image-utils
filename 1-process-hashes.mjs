@@ -56,13 +56,61 @@ for await (const line of rl) {
   }
 
   const statPromises = files.map(file => fsp.stat(file));
+  const fileBytes = files.map(file => fsp.readFile(file));
   const stats = await Promise.all(statPromises);
+  const fileBuffers = await Promise.all(fileBytes);
 
   const fileStats = new Map();
+  const fileBufs = new Map();
   for (let i = 0; i < files.length; i++) {
     fileStats.set(files[i], stats[i]);
+    fileBufs.set(files[i], fileBuffers[i]);
   }
 
+
+  // all files in this hash/line have the same image hash, so it is most likely
+  // that they are the same image. do I need to verify that the images are the
+  // same if the hashes are the same? I don't think so, but maybe a double
+  // check is prudent.
+
+  // in any case, put files with the same hash into multiple buckets:
+  // 1. same file size - in theory can have different data, but these require
+  // comparison of the buffers to determine if they are the same.
+  // 1.5. if same file size but different EXIF data (unlikely) -
+  // 2. diferent file size - need to compare image size and EXIF data (and maybe
+  // image buffers) to determine if they are the same image. most likely it's
+  // different EXIF data.
+
+  // remove candidates that are not the same. they may become EXIF variants.
+  // these could have the same image, but differ in EXIF data.
+  const sizeBuckets = new Map();
+  // these files are the same binary data (implicitly same length).
+  const exactMatches = [];
+
+
+  //
+  // group files by size. if all the same then the an EXIF data change is most
+  // likely (possibly image data if two diff images have the same hash).
+  //
+  for (const file of files) {
+    let size = fileStats.get(file).size;
+    let sizeBucket = sizeBuckets.get(size);
+    if (!sizeBucket) {
+      sizeBucket = [];
+      sizeBuckets.set(size, sizeBucket);
+    }
+    sizeBucket.push(file);
+  }
+
+  // loop through each bucket? i don't think it matters that there might be
+  // one or two or whatever.
+  console.log(`(${sizeBuckets.size} different sizes):`);
+  // show the files/lengths/birthtimes
+  displayFileStats(fileStats);
+
+  // if no delete candidates, check for BURST patterns?
+  // how to ID - filename most likely, maybe EXIF BurstID and/or CameraBurstID
+  // BurstPrimary?
   findDeleteCandidates(files, fileStats);
   continue;
   //sortBy(files, fileStats);
@@ -98,27 +146,83 @@ function findDeleteCandidates(files, fileStats) {
 
     if (p.name.length < shortest[1]) {
       // we don't need to worry about the extension at this point
-      // because they are all jpg/jpeg.
+      // because they are all jpg/jpeg. when handling .png, .raw, etc.
+      // they will need to be filtered either here or before here.
       shortest[0] = p.name;
       shortest[1] = p.name.length;
     }
   }
 
-  if (dirs.size === 1) {
-    // files are all in same directory.
-    console.log('[same directory]', dirs);
-    console.log('  ', ...parsed.values().map(p => p.base), doPatternMatching(shortest, parsed));
-  } else {
-    // files are in different directories, so nothing is a candidate this first
-    // pass at the code.
+  if (dirs.size > 1) {
     console.log('[multiple directories]', dirs);
+    return;
   }
+  const dir = dirs.values().next().value;
+
+  // files are all in same directory.
+  const nameDiffs = getNameExtensionDiffs(shortest, parsed);
+  if (nameDiffs.length === 0) {
+    console.log(`  => no delete candidates in ${dir}`);
+    return;
+  }
+
+  console.log('  => same directory', dir);
+  displayDeleteCandidates(nameDiffs, fileStats);
+  //console.log('  ', ...parsed.values().map(p => p.base), extensions);
+
 
 }
 
+//
+// find the portions of each name that is longer than the shortest name.
+//
+function getNameExtensionDiffs(shortest, parsed) {
+  const extras = [];
 
+  for (const file of parsed.values()) {
+    if (file.name.length === shortest[1]) {
+      // it is the shortest, so it's not a candidate. how to handle
+      // google photos when multiple files can have the same name?
+      // tbd.
+      continue;
+    }
+    const extra = file.name.slice(shortest[1]);
+    if (extra.length > 0) {
+      extras.push({file, extra});
+    }
+  }
 
-function doPatternMatching(shortest, parsed) {
+  return extras; //counts;
+}
+
+// display the delete candidates.
+//
+// a file is a candidate if the extension part of the name (not the file
+// extension but the part of the name that extends beyond the shortest name)
+// matches one of the candidate patterns.
+function displayDeleteCandidates(nameDiffs, fileStats) {
+  const pats = [
+    /^-\d{1,3}$/,
+    /^_\d{1,3}$/,
+    /^ \(\d{1,3}\)$/,
+    /^\d{1,2}$/,
+  ];
+  for (const pat of pats) {
+    const matches = nameDiffs.filter(e => e.extra.match(pat));
+    if (matches.length > 0) {
+      console.log(`  => delete candidates:`, matches.map(m => m.file.base));
+    }
+  }
+}
+
+function displayFileStats(fileStats) {
+  for (const [file, stat] of fileStats.entries()) {
+    const date = new Date(stat.birthtimeMs).toISOString();
+    console.log(`  ${file}: ${stat.size} bytes ${date}`);
+  }
+}
+
+/**
   const pats = {
     numberSuffix: /^(.+)[^_)-](\d{1,3})\.(jpg|JPG|jpeg|JPEG)$/,
     underscoreSuffix: /^(.+)(_\d{1,3})\.(jpg|JPG|jpeg|JPEG)$/,
@@ -137,32 +241,9 @@ function doPatternMatching(shortest, parsed) {
     dashSuffix: 0,
     spaceSuffix: 0,
   };
+ */
 
-  const extras = [];
 
-  for (const file of parsed.values()) {
-    if (file.name.length === shortest[1]) {
-      // it is the shortest, so it's not a candidate. how to handle
-      // google photos when multiple files can have the same name?
-      // tbd.
-      continue;
-    }
-    const extra = file.name.slice(shortest[1]);
-    if (extra.length > 0) {
-      extras.push(extra);
-    }
-    continue;
-    // otherwise, it's a suffix candidate
-    for (const [key, pat] of Object.entries(pats)) {
-
-      const m = file.match(pat);
-      if (m) {
-        counts[key]++;
-      }
-    }
-  }
-
-  return extras; //counts;
 
 
   // const pat1 =/^(.+)(\d{1,3})?\.(jpg|JPG|jpeg|JPEG)$/;
@@ -170,35 +251,6 @@ function doPatternMatching(shortest, parsed) {
   // const pat3 =/^(.+)(-\d{1,3})?\.(jpg|JPG|jpeg|JPEG)$/;
   // const pat4 =/^(.+)( \(\d{1,3}\))?\.(jpg|JPG|jpeg|JPEG)$/;
   // const patterns = [pat1, pat2, pat3, pat4];
-
-  // compare buffers of files? or should we just use the hash because the images
-  // are the same? or verify that there wasn't a different-image hash collision?
-  // for now, let's assume the images are the same if the hash is.
-  if (file1 === file2) {
-    // are they the same name but in different directories?
-      // and the birthtime is the same?
-      // might not want to delete, but flag.
-    // same directory
-      // check name patterns for candidates
-  }
-
-  if (file1 !== file2) {
-    // image is the same but EXIF data varies?
-  }
-
-  if (parsed.length == 1) {
-    return parsed;
-  }
-
-  let matches = [];
-  for (const file of parsed) {
-    const m = patterns.map(p => file.match(p)).filter(m => m);
-    if (m.length > 0) {
-      matches.push(m[0]);
-    }
-  }
-
-}
 
 //
 // sorts the files by birthtime
