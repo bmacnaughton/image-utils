@@ -26,6 +26,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
 
+import Image from './lib/image.mjs';
+
 const fsp = fs.promises;
 
 const fileName = process.argv[2] || 'sha256-collisions.txt';
@@ -104,9 +106,30 @@ for await (const line of rl) {
 
   // loop through each bucket? i don't think it matters that there might be
   // one or two or whatever.
-  console.log(`(${sizeBuckets.size} different sizes):`);
-  // show the files/lengths/birthtimes
+  if (sizeBuckets.size === 1) {
+    console.log('all files are the same size');
+  } else {
+    console.log(`(${sizeBuckets.size} different sizes):`);
+  }
+  // show the files/lengths/birthtimes. mostly for debugging.
   displayFileStats(fileStats);
+
+  // verify that that the image buffers are identical. they should be, because
+  // they all hashed to the same value. but it's a good sanity check.
+  //
+  const images = new Map();
+  for (const file of files) {
+    const buf = fileBufs.get(file);
+    images.set(file, new Image(file, {buf}));
+  }
+  for (let i = 0; i < files.length - 1; i++) {
+    const f1 = await images.get(files[i]).getImageBuffer();
+    const f2 = await images.get(files[i + 1]).getImageBuffer();
+    if (!f1.equals(f2)) {
+      // this means two different images hashed to the same value.
+      throw new Error(`IMAGEBUFFERS DIFFERENT ${files[i]} != ${files[i + 1]}`);
+    }
+  }
 
   // if no delete candidates, check for BURST patterns?
   // how to ID - filename most likely, maybe EXIF BurstID and/or CameraBurstID
@@ -133,6 +156,10 @@ for await (const line of rl) {
   // hash n file,file...
 }
 
+//
+// this finds candidates based on the file name. that probably shouldn't be
+// the first thing - file length/image buffer compares?
+//
 function findDeleteCandidates(files, fileStats) {
   const parsed = new Map();
   const dirs = new Set();
@@ -210,7 +237,7 @@ function displayDeleteCandidates(nameDiffs, fileStats) {
   for (const pat of pats) {
     const matches = nameDiffs.filter(e => e.extra.match(pat));
     if (matches.length > 0) {
-      console.log(`  => delete candidates:`, matches.map(m => m.file.base));
+      console.log(`  => delete candidates by name:`, matches.map(m => m.file.base));
     }
   }
 }
