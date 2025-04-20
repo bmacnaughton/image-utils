@@ -27,6 +27,7 @@ import path from 'node:path';
 import {createInterface} from 'node:readline';
 
 import Image from './lib/image.mjs';
+import {deepObjectDiff, countUndefineds} from './lib/diffs/object-diff.mjs';
 
 const fsp = fs.promises;
 
@@ -130,6 +131,28 @@ for await (const line of rl) {
       throw new Error(`IMAGEBUFFERS DIFFERENT ${files[i]} != ${files[i + 1]}`);
     }
   }
+
+  // now files with the same hash (and implicitly the same image data) might
+  // have different EXIF data. check it out.
+  for (let i = 0; i < files.length - 1; i++) {
+    const left = await images.get(files[i]).getExifData();
+    const right = await images.get(files[i + 1]).getExifData();
+    //const diff = deepObjectDiff(f1, f2);
+    const undefCounts = countUndefineds(left, right);
+    if (undefCounts) {
+      console.log(`EXIF DIFFERENT ${files[i]} != ${files[i + 1]}`);
+      if (undefCounts.left === 0) {
+        console.log(`  => delete candidate by EXIF: ${files[i + 1]} (${undefCounts.right} fields)`);
+      } else if (undefCounts.right === 0) {
+        console.log(`  => delete candidate by EXIF: ${files[i]} (${undefCounts.left} fields)`);
+
+      }
+      //console.log(undefCounts);
+    }
+  }
+
+  // image data is the same, so if there is a difference in the files, it's
+  // either the EXIF data or ?
 
   // if no delete candidates, check for BURST patterns?
   // how to ID - filename most likely, maybe EXIF BurstID and/or CameraBurstID
